@@ -130,9 +130,8 @@ process_update(PropList) ->
 
 reconcile_and_update_filter(C, RO, PropList) ->
     FileName = proplists:get_value(file, PropList),
-    case riakc_obj:value_count(RO) of
-        1 ->
-            {ok, Filter} = ebloom:deserialize(riakc_obj:get_value(RO)),
+    case deserialize_and_reconcile_filters(RO) of
+        {ok, Filter} ->
             case add_file_keys_to_filter(Filter, FileName) of
                 ok ->
                     RO2 = riakc_obj:update_value(RO, ebloom:serialize(Filter)),
@@ -140,24 +139,26 @@ reconcile_and_update_filter(C, RO, PropList) ->
                 terminate ->
                     terminate
             end;
-        _ ->
-            case deserialize_and_reconcile_filters(RO) of
-                {ok, Filter} ->
-                    RO2 = riakc_obj:update_value(RO, ebloom:serialize(Filter)),
-                    upload_filter(C, RO2);
-                terminate ->
-                    terminate
-            end
+        none ->
+            io:format("Error: No filter found in the database.~n"),
+            terminate
+    end.
+    
+%% hidden
+deserialize_and_reconcile_filters(RO) ->
+    case [D || D <- riakc_obj:get_values(RO), D =/= <<>>] of
+        [] ->
+            none;
+        [V | VL] ->
+            {ok, Filter} = ebloom:deserialize(V),
+            lists:foreach(fun(F) ->
+                              {ok, DF} = ebloom:deserialize(F),
+                              ebloom:union(Filter, DF)
+                          end, VL),
+            {ok, Filter}
     end.
 
-deserialize_and_reconcile_filters(RO) ->
-    [V | VL] = riak_object:get_values(RO),
-    Filter = ebloom:deserialize(V),
-    lists:foreach(fun(F) ->
-                      ebloom:union(Filter, ebloom:deserialize(F))
-                  end, VL),
-    {ok, Filter}.
-
+%% hidden
 process_create(PropList) ->
     Elements = proplists:get_value(elements, PropList),
     Probability = proplists:get_value(probability, PropList),
@@ -180,6 +181,7 @@ process_create(PropList) ->
             terminate
     end.
 
+%% hidden
 upload_created_filter(Filter, FilterMD, PropList) ->
     Host = proplists:get_value(host, PropList),
     Port = proplists:get_value(port, PropList),
@@ -205,6 +207,7 @@ upload_created_filter(Filter, FilterMD, PropList) ->
             terminate
     end.
 
+%% hidden
 upload_filter(Conn, RO) ->
     case riakc_pb_socket:put(Conn, RO) of
         ok ->
@@ -218,6 +221,7 @@ upload_filter(Conn, RO) ->
             terminate
     end.
 
+%% hidden
 filter_parameters_ok(Elements, Prob, Seed) ->
     case {(Elements > 0),(Prob > 0),(Prob < 1),(Seed >= 0)} of
         {true, true, true, true} ->
@@ -226,6 +230,7 @@ filter_parameters_ok(Elements, Prob, Seed) ->
             false
     end.
 
+%% hidden
 add_file_keys_to_filter(Filter, FileName) ->
     case file:open(FileName, [binary, read, raw, {read_ahead, ?READSIZE}]) of
         {ok, IoDev} ->
@@ -235,6 +240,7 @@ add_file_keys_to_filter(Filter, FileName) ->
             terminate
     end.
 
+%% hidden
 add_keys_to_filter(IoDev, Filter) ->
     case file:read_line(IoDev) of
         {ok, Bin} ->
@@ -253,6 +259,7 @@ add_keys_to_filter(IoDev, Filter) ->
             {error, Reason}
     end.
 
+%% hidden
 strip_nl(Bin) when is_binary(Bin) ->
     case binary:last(Bin) of
         10 ->
